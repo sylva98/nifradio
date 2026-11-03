@@ -1,2 +1,0 @@
-[console_scripts]
-nifradio-mcp = nifradio_mcp:main
