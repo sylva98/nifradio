@@ -1,68 +1,114 @@
-# 小智收音机 · 云端服务
+# 小智收音机 · MCP 服务
 
 把浏览器插件里的电台、歌单和 B 站点歌接进小智 AI，让设备自己出声。
 
-这个服务必须**常驻运行**：小智的 MCP 接入点是「服务主动去连它」的 WebSocket
-长连接，进程一停，智能体里的工具就会消失。所以 GitHub Pages、Cloudflare
-Workers 这类静态/按需运行的环境都用不了，需要 Koyeb、VPS 这类能一直跑的容器。
+服务是标准的 **STDIO 型 MCP**，共 10 个工具：
 
-## 一键部署到 Koyeb（免费，不用信用卡，不休眠）
-
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/sylva98/nifradio&branch=main&name=nif-radio&instance_type=free&region=fra&ports=8080;http;/)
-
-点开后用 GitHub 账号登录 Koyeb，确认表单里这几项，然后点 **Deploy**：
-
-| 项目 | 值 |
+| 工具 | 用途 |
 |---|---|
-| Source | Git → 本仓库 `main` 分支 |
-| Builder | Dockerfile |
-| Instance type | **Free**（512MB RAM / 0.1 vCPU） |
-| Region | Frankfurt (`fra`) 或 Washington D.C. (`was`)，免费实例只有这两区 |
-| Port | `8080`，HTTP，路径 `/` |
+| `play_song` | 点歌（说「放周杰伦」直接播） |
+| `next_song` / `replay_song` | 下一首 / 重播当前 |
+| `list_radio_categories` | 列出蜻蜓的 13 个广播分类 |
+| `list_radio_stations` | 某个分类下的电台 |
+| `find_radio_station` | 按名字找电台（「清晨」「交通台」） |
+| `search_song` | 在 B 站搜歌，返回候选 |
+| `get_song_url` | 取某一首的音频地址 |
+| `search_open_music` | 开放版权曲库（Jamendo） |
+| `play_on_computer` | 在本机播放器里放（仅本地调试用） |
 
-等待约 2~3 分钟构建完成，Koyeb 会给你一个 `https://xxxx.koyeb.app` 网址。
+## MCP Server Config
 
-## 部署后只需做一次
+```json
+{
+  "mcpServers": {
+    "nifradio": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/sylva98/nifradio", "nifradio-mcp"]
+    }
+  }
+}
+```
 
-1. 打开这个 `https://xxxx.koyeb.app`，会看到一个网页控制台。
-2. 去小智控制台 → 你的智能体 → 扩展能力 → **MCP 接入点**，点复制，把整串
-   `wss://api.xiaozhi.me/mcp/?token=...` 粘进网页的输入框，点「连接」。
-3. 日志里出现 `Successfully connected` 和 `ListToolsRequest` 就通了。
-   回小智控制台刷新扩展能力页，能看到工具列表即完成。
+已经发布到 PyPI 的话，把 `args` 简化成 `["nifradio-mcp"]` 即可。
 
-之后对小智说：「播放周杰伦」「放清晨电台」「播放 cctv1」「下一曲」。
+## 在魔搭 MCP 广场创建服务
 
-### 建议再设一个环境变量（可选，但推荐）
+1. 打开 <https://modelscope.cn/mcp/servers/create?template=customize>
+2. 创建类型选 **自定义创建**
+3. 基础信息
 
-Koyeb 容器的文件系统是临时的，重新部署后网页贴过的接入点会丢。想一劳永逸：
-Koyeb 控制台 → Service → Settings → **Environment variables**，加一条
-`MCP_ENDPOINT`，值就是那串 `wss://...`，勾上 Secret。服务启动时会自动读它重连。
+   | 字段 | 值 |
+   |---|---|
+   | 英文名 | `nifradio` |
+   | 中文名 | `小智收音机` |
+   | 来源地址 | `https://github.com/sylva98/nifradio` |
+   | 托管类型 | **可托管部署** |
 
-## 目录说明
+4. 服务配置：粘贴上面那段 `mcpServers` JSON
+5. README：写清项目简介 / 部署指南 / 使用示例三部分（平台要求）
+6. 创建后平台会自动做托管部署检测，通过后给出
+   `https://mcp.api-inference.modelscope.net/{id}/sse`
+
+## 关于「桥」
+
+魔搭托管出来的是**被动 SSE 地址**，而小智控制台只提供**主动连出去的 wss 接入点**，
+两者方向相反，不能直接对接。需要在中间放一座桥：
+
+```
+魔搭 SSE（工具）  ←→  桥  ←→  wss://api.xiaozhi.me（小智）
+```
+
+可选做法：
+
+- **小智Pro** 的「接入点MCP」：云端替你保持桥，支持 SSE / StreamableHttp / STDIO，自动重连
+- **xiaozhi-client**：本地跑 `npx -y xiaozhi-client start`，需要一台常开的机器
+
+## 工具行为说明
+
+- **B 站音频**：`play_song` 返回的是 m4s 直链（约 785 字符，2 小时过期）。
+  实测裸 UA、不带 `Referer` 也能拿到 200，设备可以直接拉。
+- **蜻蜓 / gitee 歌单**：都是公网 MP3 / OSS 直链，设备直接拉。
+- **播放队列**：进程内记「上次点了什么、放到第几首」，`next_song` 往后翻一个。
+- **字节预算**：小智读回结果约 1024 字节封顶，播放类回复已精简到 951 字节以内。
+
+## 自建容器部署（可选）
+
+`server.py` 是一个单进程入口，把「网页控制台 + 短链代理 + MCP 桥接」合在一起，
+适合跑在自己的 VPS / 容器里：
+
+```bash
+pip install -r requirements.txt
+PORT=8080 python server.py
+```
+
+打开网页，把小智控制台的 wss 接入点粘进去，点「连接」。日志出现
+`Successfully connected` 和 `ListToolsRequest` 即成功。
+也可用环境变量 `MCP_ENDPOINT` 免手工粘贴。
 
 | 文件 | 作用 |
 |---|---|
-| `server.py` | 云上入口：网页控制台 + 短链代理 + MCP 桥接子进程 |
-| `stream_proxy.py` | 短链代理：补 B 站 Referer、缩短 755 字符音频地址 |
+| `nifradio_mcp.py` | 托管/uvx 入口（纯 STDIO） |
+| `pyproject.toml` | 打包配置，console script = `nifradio-mcp` |
+| `radio_mcp.py` | MCP 工具层：点歌、搜台、播放队列、字节预算 |
 | `bili_core.py` | B 站搜索（wbi 签名 + 指纹 + 风控退避）与音频解析 |
-| `radio_core.py` | 蜻蜓电台、Jamendo、gitee 歌单的数据层 |
-| `radio_mcp.py` | MCP 工具层：点歌、搜台、播放队列、字节预算裁剪 |
-| `mcp_pipe.py` | 小智官方桥接脚本，出站连 `wss://api.xiaozhi.me` |
+| `radio_core.py` | 蜻蜓电台、Jamendo、gitee 歌单数据层 |
+| `server.py` | 自建部署入口：网页 + 短链代理 + 桥接 |
+| `stream_proxy.py` | 短链代理（仅自建部署需要） |
+| `mcp_pipe.py` | 小智官方桥接脚本 |
 
-电台数据不在本仓库里，直接读 gitee `nif99/niffm` 和 `nif99/gedan`；
-在 gitee 上增删改台，约 60 秒后自动生效，不需要重新部署。
+电台数据不在本仓库，直接读 gitee `nif99/niffm` 和 `nif99/gedan`；
+在 gitee 上增删改台约 60 秒后生效，不需要重新部署。
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `PORT` | `8080` | HTTP 端口 |
-| `MCP_ENDPOINT` | 空 | 小智接入点，设置后开机自动连 |
-| `PUBLIC_BASE_URL` | 自动学 | 对外域名，用于生成音频短链；不设会从请求 Host 头自动学 |
-| `KEEPALIVE_SEC` | `600` | 自探活间隔，防止免费实例空闲缩容 |
-| `STREAM_PROXY` | 空 | 设为 `0` 时不在子进程里另起代理（server.py 已自动处理） |
+| `PUBLIC_BASE_URL` | 空 | 设了才启用短链代理；不设则直接返回 B 站原始地址 |
+| `STREAM_PROXY` | 空 | 设为 `0` 强制关闭短链代理 |
+| `PORT` | `8080` | 自建部署的 HTTP 端口 |
+| `MCP_ENDPOINT` | 空 | 小智 wss 接入点，自建入口用它自动重连 |
 
 ## 注意
 
-- `.endpoint` 里存的是接入点 token，已在 `.gitignore` 中排除，**不要提交**。
-- 免费实例只有一个 Web Service 名额；本服务正好占一个。
+- 小智 MCP 接入点 token 存在 `.endpoint`，已在 `.gitignore` 排除，**不要提交**。
+- `mcp` 依赖锁在 `1.x`：2.0 把 FastMCP 改名、传输层协议也变了。
