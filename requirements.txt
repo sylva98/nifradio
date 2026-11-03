@@ -1,0 +1,15 @@
+# 小智官方 mcp_pipe.py 的依赖；httpx 供 radio_core 调接口
+#
+# 注意 mcp 必须锁在 1.x：
+#   mcp 2.0 把 FastMCP 改名成 MCPServer、传输层协议也变了，
+#   而虾哥官方示例（mcp-calculator）和当前小智云端接入点都是按 1.x 写的。
+python-dotenv>=1.2.1
+websockets>=15.0.1
+mcp>=1.20.0,<2
+pydantic>=2.12.3
+httpx>=0.27.0
+
+# 短链代理（stream_proxy.py）：MCP 1.x 本身已经依赖 starlette，
+# 这里显式钉住，避免上游改依赖时悄悄消失。
+starlette>=0.37
+uvicorn>=0.30
