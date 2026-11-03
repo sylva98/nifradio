@@ -1,0 +1,8 @@
+# 接入点里是小智的长期 token，绝不能进公开仓库
+.endpoint
+.env
+
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
