@@ -20,7 +20,20 @@ from mcp.server.fastmcp import FastMCP
 
 import bili_core
 import radio_core
-import stream_proxy
+
+# stream_proxy 只在「有公网 HTTP 服务」时才需要。魔搭托管的是纯 STDIO 进程，
+# 没有额外 HTTP 端口，此时直接把 B 站原始音频地址交给设备——实测 m4s 用裸 UA、
+# 不带 Referer 也返回 200，设备可以直接拉。
+_PROXY_ENABLED = bool(os.getenv("PUBLIC_BASE_URL", "").strip())
+
+
+async def _play_link(bvid: str) -> tuple[str, dict]:
+    """取可播放地址：有代理走短链，无代理走 B 站原始地址。"""
+    if _PROXY_ENABLED:
+        import stream_proxy
+        return await stream_proxy.link_for_bvid(bvid)
+    info = await bili_core.bili.resolve_audio(bvid)
+    return info["url"], info
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("nifradio-mcp")
@@ -145,10 +158,19 @@ async def _play_current(prefix: str = "正在播放") -> str:
     if not hit:
         return "播放列表空了，重新点一首吧。"
     try:
-        link, _info = await stream_proxy.link_for_bvid(hit["bvid"])
+        link, _info = await _play_link(hit["bvid"])
     except Exception as exc:
         logger.warning("取播放地址失败: %s", exc)
         return f"找到《{_short(hit['title'])}》了，但取播放地址失败，稍后再试。"
+
+    # 无代理时给的是 B 站原始地址（约 785 字符），再堆作者/时长会顶破
+    # 小智那 1024 字节的结果上限，所以精简成「标题 + 链接 + 一句交代」。
+    if not _PROXY_ENABLED:
+        return (
+            f"{prefix}：{_short(hit['title'], 32)}\n"
+            f"{link}\n"
+            "把上面链接原样交给设备播放工具，不要念出来。"
+        )
 
     minutes, seconds = divmod(hit["duration"], 60)
     position = _QUEUE["index"] + 1
@@ -222,7 +244,7 @@ async def search_song(keyword: str, limit: int = 3) -> str:
     lines: list[str] = []
     for i, row in enumerate(rows, 1):
         try:
-            link, _info = await stream_proxy.link_for_bvid(row["bvid"])
+            link, _info = await _play_link(row["bvid"])
         except Exception:
             continue
         minutes, seconds = divmod(row["duration"], 60)
@@ -287,8 +309,9 @@ async def play_on_computer(url: str) -> str:
 
 
 if __name__ == "__main__":
-    # 短链代理和 MCP 共处一个进程：MCP 走 stdio（由 mcp_pipe 桥接），
-    # 代理走 HTTP 端口（设备来拉音频）。设 STREAM_PROXY=0 可单独关掉代理。
-    if os.getenv("STREAM_PROXY", "1").strip() != "0":
+    # 只有存在公网 HTTP 服务时才起短链代理；托管在魔搭这类纯 STDIO 环境里
+    # 没有额外端口，代理不起，工具会直接返回 B 站原始音频地址。
+    if _PROXY_ENABLED and os.getenv("STREAM_PROXY", "1").strip() != "0":
+        import stream_proxy
         stream_proxy.run_in_thread()
     mcp.run(transport="stdio")
