@@ -8,7 +8,7 @@ Workers 这类静态/按需运行的环境都用不了，需要 Koyeb、VPS 这�
 
 ## 一键部署到 Koyeb（免费，不用信用卡，不休眠）
 
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/sylva98/nifradio&branch=main&name=nif-radio&instance_type=free&region=fra&ports=8080%3Bhttp%3B%2F)
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/sylva98/nifradio&branch=main&name=nif-radio&instance_type=free&region=fra&ports=8080;http;/)
 
 点开后用 GitHub 账号登录 Koyeb，确认表单里这几项，然后点 **Deploy**：
 
