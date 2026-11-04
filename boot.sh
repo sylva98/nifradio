@@ -14,7 +14,8 @@
 #      依赖按 requirements.txt 的哈希打标记，没变就不重装
 #   ③ 把开机自启插件装进系统 Python（Jupyter 服务端扩展），
 #      装好之后**实例一启动服务就自己上线**，不用再敲命令
-#   ④ 杀掉旧进程、启动守护循环
+#   ④ 杀掉旧进程、启动守护循环 + 保活进程
+#      （保活每 10 分钟刷一次 Jupyter 活动，避免实例被判定「静默」而关机）
 #   ⑤ 等 25 秒后打印健康状态
 set -u
 
@@ -132,10 +133,17 @@ echo "④ 重启服务…"
 pkill -f '[s]erver\.py' 2>/dev/null
 pkill -f '[m]cp_pipe' 2>/dev/null
 pkill -f '[m]cp_audio_server' 2>/dev/null
+pkill -f '[k]eepalive\.py' 2>/dev/null
 sleep 2
 nohup bash -c "while true; do cd $WS && $PY server.py; sleep 5; done" \
   > "$WS/radio.log" 2>&1 &
 echo "  已启动，等 25 秒连小智…"
+
+if [ -f keepalive.py ]; then
+  nohup "$PY" keepalive.py > "$WS/keepalive.log" 2>&1 &
+  echo "  保活已挂上（每 10 分钟刷新活动，日志 keepalive.log）"
+fi
+
 sleep 25
 
 echo "==== 健康 ===="
@@ -143,6 +151,9 @@ curl -s http://127.0.0.1:8080/health
 echo
 echo "==== 最近日志 ===="
 curl -s http://127.0.0.1:8080/api/status | head -c 900
+echo
+echo "==== 保活 ===="
+tail -n 3 "$WS/keepalive.log" 2>/dev/null || echo "  未启动"
 echo
 echo "==== 缓存占用 ===="
 du -sh "$WS/.cache/media" 2>/dev/null || echo "  暂无"
