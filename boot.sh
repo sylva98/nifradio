@@ -135,12 +135,22 @@ pkill -f '[m]cp_pipe' 2>/dev/null
 pkill -f '[m]cp_audio_server' 2>/dev/null
 pkill -f '[k]eepalive\.py' 2>/dev/null
 sleep 2
+
+# 覆盖日志前，先把上一轮日志的最后写入时刻存下来——那就是实例被平台停掉的时刻。
+# （旧版直接 > 覆盖，这条线索每次重启都被冲掉，导致无法推算停机规则。）
+for f in "$WS/radio.log" "$WS/keepalive.log"; do
+  if [ -s "$f" ]; then
+    stat -c '%y  %n' "$f" >> "$WS/last_stop.txt" 2>/dev/null
+    tail -n 200 "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+  fi
+done
+
 nohup bash -c "while true; do cd $WS && $PY server.py; sleep 5; done" \
-  > "$WS/radio.log" 2>&1 &
+  >> "$WS/radio.log" 2>&1 &
 echo "  已启动，等 25 秒连小智…"
 
 if [ -f keepalive.py ]; then
-  nohup "$PY" keepalive.py > "$WS/keepalive.log" 2>&1 &
+  nohup "$PY" keepalive.py >> "$WS/keepalive.log" 2>&1 &
   echo "  保活已挂上（后台内核循环执行，日志 keepalive.log）"
 fi
 
@@ -157,3 +167,6 @@ tail -n 3 "$WS/keepalive.log" 2>/dev/null || echo "  未启动"
 echo
 echo "==== 缓存占用 ===="
 du -sh "$WS/.cache/media" 2>/dev/null || echo "  暂无"
+echo
+echo "==== 上次停机时刻 ===="
+tail -n 4 "$WS/last_stop.txt" 2>/dev/null || echo "  首次运行，暂无记录"
