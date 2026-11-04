@@ -66,7 +66,12 @@
 ## 工具行为说明
 
 - **B 站音频**：`play_song` 返回的是 m4s 直链（约 785 字符，2 小时过期）。
-  实测裸 UA、不带 `Referer` 也能拿到 200，设备可以直接拉。
+- **设备拉流硬性要求（2026-11-04 实测）**：B 站 CDN 节点
+  `upos-sz-mirrorhw01.bilivideo.com` 对不带 Referer 的请求一律返回
+  `403 Forbidden`（nginx HTML 页，323 字节）。**请求必须带
+  `Referer: https://www.bilibili.com/`**，UA 任意（`ESP32-HTTPClient/1.0`
+  实测可过）。带上后 200 / audio/mpeg，Range 分段请求正常。设备端播放器
+  拉流时务必加这个头；蜻蜓 MP3 流无此要求。
 - **蜻蜓 / gitee 歌单**：都是公网 MP3 / OSS 直链，设备直接拉。
 - **播放队列**：进程内记「上次点了什么、放到第几首」，`next_song` 往后翻一个。
 - **字节预算**：小智读回结果约 1024 字节封顶，播放类回复已精简到 951 字节以内。
