@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: nifradio-autostart
+Version: 1.0.0
+Summary: ModelScope DSW 实例启动时自动拉起小智音乐电台服务
+Requires-Python: >=3.8
+Dynamic: requires-python
+Dynamic: summary

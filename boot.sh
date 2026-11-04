@@ -4,12 +4,14 @@
 # 用法（实例重启后，或任何时候想重启服务）：
 #     bash /mnt/workspace/nifradio/boot.sh
 #
-# 它做四件事，全部幂等，重复跑没有副作用：
+# 它做五件事，全部幂等，重复跑没有副作用：
 #   ① 拉最新代码（git 走不通就换镜像压缩包）
 #   ② 准备运行环境：虚拟环境装到 /mnt/workspace（NAS 持久盘，重启不丢），
 #      依赖按 requirements.txt 的哈希打标记，没变就不重装
-#   ③ 确认 ffmpeg 可用（系统没有就用 imageio-ffmpeg 自带的那份）
-#   ④ 杀掉旧进程、启动守护循环、等 25 秒后打印健康状态
+#   ③ 把开机自启插件装进系统 Python（Jupyter 服务端扩展），
+#      装好之后**实例一启动服务就自己上线**，不用再敲命令
+#   ④ 杀掉旧进程、启动守护循环
+#   ⑤ 等 25 秒后打印健康状态
 set -u
 
 WS=/mnt/workspace/nifradio
@@ -84,7 +86,38 @@ else
   echo "  ⚠ 缺少 .endpoint（接入点没写进来），服务起来了也连不上小智"
 fi
 
-echo "③ 重启服务…"
+echo "③ 安装开机自启（只做一次，之后就自动了）…"
+SYS_PY=$(command -v python3)
+AUTO_PKG="$WS/autostart"
+AUTO_CFG="$AUTO_PKG/jupyter-config/jupyter_server_config.d/nifradio_autostart.json"
+
+if [ -f "$AUTO_PKG/setup.py" ]; then
+  "$SYS_PY" -m pip install -q --no-deps --no-build-isolation "$AUTO_PKG" >/tmp/auto_install.log 2>&1 \
+    || "$SYS_PY" -m pip install -q --no-deps "$AUTO_PKG" >>/tmp/auto_install.log 2>&1 \
+    || "$SYS_PY" -m pip install -q --no-deps --break-system-packages \
+         "$AUTO_PKG" >>/tmp/auto_install.log 2>&1
+fi
+
+if "$SYS_PY" -c "import nifradio_autostart" >/dev/null 2>&1; then
+  echo "  自启插件就位：实例启动后会自动跑 boot.sh，你不用敲命令"
+else
+  echo "  pip 装不上，改用直接拷贝…"
+  SP=$("$SYS_PY" -c "import site;print(site.getsitepackages()[0])" 2>/dev/null)
+  [ -n "${SP:-}" ] && cp -r "$AUTO_PKG/nifradio_autostart" "$SP/" 2>/dev/null
+  if "$SYS_PY" -c "import nifradio_autostart" >/dev/null 2>&1; then
+    echo "  已拷贝到 $SP"
+  else
+    echo "  ⚠ 自启没装成（不影响本次运行；以后重启仍需手动跑 boot.sh）"
+  fi
+fi
+
+# 配置兜底：保证 Jupyter 无论从哪个目录读配置都能看到这个扩展
+for d in /usr/local/etc/jupyter/jupyter_server_config.d \
+         /etc/jupyter/jupyter_server_config.d; do
+  mkdir -p "$d" 2>/dev/null && cp -f "$AUTO_CFG" "$d/" 2>/dev/null
+done
+
+echo "④ 重启服务…"
 pkill -f '[s]erver\.py' 2>/dev/null
 pkill -f '[m]cp_pipe' 2>/dev/null
 pkill -f '[m]cp_audio_server' 2>/dev/null

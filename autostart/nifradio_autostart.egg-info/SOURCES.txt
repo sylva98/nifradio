@@ -1,0 +1,7 @@
+setup.py
+jupyter-config/jupyter_server_config.d/nifradio_autostart.json
+nifradio_autostart/__init__.py
+nifradio_autostart.egg-info/PKG-INFO
+nifradio_autostart.egg-info/SOURCES.txt
+nifradio_autostart.egg-info/dependency_links.txt
+nifradio_autostart.egg-info/top_level.txt
