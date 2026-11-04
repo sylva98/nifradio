@@ -141,7 +141,7 @@ echo "  已启动，等 25 秒连小智…"
 
 if [ -f keepalive.py ]; then
   nohup "$PY" keepalive.py > "$WS/keepalive.log" 2>&1 &
-  echo "  保活已挂上（每 10 分钟刷新活动，日志 keepalive.log）"
+  echo "  保活已挂上（后台内核循环执行，日志 keepalive.log）"
 fi
 
 sleep 25
