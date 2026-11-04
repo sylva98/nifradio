@@ -136,40 +136,6 @@ def _status() -> dict:
     }
 
 
-def _keepalive() -> None:
-    """每 10 分钟打一次自己的公网 /health。
-
-    Koyeb 这类免费实例在长时间没有入站流量时可能缩容到 0，而这个服务
-    的价值全在那条「出站 wss 长连接」上——一缩容，小智那边的工具就没了。
-    对外域名事先不知道：第一个外部请求进来时 _learn_base 会落盘，之后
-    就照着它打；学不到时先打本机，等外部请求来补齐。
-    """
-    import urllib.request
-
-    port = int(os.getenv("PORT", "8080"))
-    try:
-        interval = max(60, int(os.getenv("KEEPALIVE_SEC", "600")))
-    except ValueError:
-        interval = 600
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-    while True:
-        time.sleep(interval)
-        base = ""
-        try:
-            if _BASE_FILE.exists():
-                base = _BASE_FILE.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        if not base or "127.0.0.1" in base or "localhost" in base:
-            base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or f"http://127.0.0.1:{port}"
-        try:
-            with opener.open(base.rstrip("/") + "/health", timeout=8) as resp:
-                resp.read(64)
-        except Exception:
-            pass
-
-
 def _learn_base(request: Request) -> None:
     host = (request.headers.get("host") or "").strip()
     if not host:
@@ -366,8 +332,5 @@ if __name__ == "__main__":
         # 延迟 8 秒：给部署平台的探活请求留时间，先学到对外域名，
         # 这样桥接子进程一启动拿到的就是正确的短链前缀
         threading.Timer(8.0, lambda: start_bridge(auto)).start()
-
-    # 防止免费容器长时间无入站流量被缩容（详情见 _keepalive）
-    threading.Thread(target=_keepalive, daemon=True).start()
 
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", access_log=False)
