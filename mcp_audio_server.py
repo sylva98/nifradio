@@ -30,59 +30,29 @@ import sys
 import traceback
 from typing import Any
 
-import httpx
+import media
 
 RES_URI = "resource://read_from_http"
 PAGE = 102400  # 100KB，与小智 Go 服务端示例一致
 DONE = base64.b64encode(b"[DONE]").decode()
 
-_UA = "ESP32-HTTPClient/1.0"
-_REFERER = "https://www.bilibili.com/"
-_LOCALE = {"Content-Type": "application/json; charset=utf-8"}
-
 
 def _mime_for(url: str) -> str:
-    low = url.lower().split("?")[0]
-    if low.endswith((".m4s", ".m4a", ".mp4")):
-        return "audio/mp4"
+    """对外统一报 audio/mpeg。
+
+    m4s（fMP4/AAC）和 .m3u8 都由 media.py 用 ffmpeg 转成 MP3 再分页，
+    所以不管源是什么格式，云端拿到的字节流都是 MP3 —— 报 audio/mpeg
+    既准确，也避开了设备对 audio/mp4 支持不明的问题。
+    """
     return "audio/mpeg"
 
 
-def _fetch_headers(url: str, start: int, end: int) -> dict[str, str]:
-    headers = {"User-Agent": _UA, "Range": f"bytes={start}-{end}"}
-    # B 站 CDN 不带 Referer 会 403；其它源带上也无害
-    if "bilivideo" in url or "bilibili" in url:
-        headers["Referer"] = _REFERER
-        headers["Origin"] = "https://www.bilibili.com"
-    return headers
-
-
 async def _read_page(url: str, start: int, end: int) -> tuple[bytes, bool]:
-    """取 [start, end] 区间；返回 (数据, 是否已到末尾)。"""
-    async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-        resp = await client.get(url, headers=_fetch_headers(url, start, end))
+    """取 [start, end] 区间；返回 (数据, 是否已到末尾)。
 
-    if resp.status_code == 416:  # Range 越界 = 已经读完
-        return b"", True
-    if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code}")
-
-    body = resp.content
-    content_range = resp.headers.get("content-range", "")
-    total: int | None = None
-    if "/" in content_range:
-        try:
-            total = int(content_range.rsplit("/", 1)[1])
-        except ValueError:
-            total = None
-
-    if not content_range and resp.status_code == 200:
-        # 源站不支持 Range：整包回来了，自己切片
-        total = len(body)
-        body = body[start:end + 1]
-
-    eof = bool(body) is False or (total is not None and end + 1 >= total)
-    return body, eof
+    由 media.py 决定透传还是转码（m4s / m3u8 → MP3）。
+    """
+    return await media.read_page(url, start, end)
 
 
 class Server:
@@ -128,6 +98,8 @@ class Server:
                 "description": urls[0],
                 "mimeType": _mime_for(urls[0]),
             })
+            # 提前起转码：等云端来分页读时首屏已有数据，省掉几秒等待
+            asyncio.create_task(media.warm(urls[0]))
         return {"content": blocks}
 
     async def read_resource(self, params: dict[str, Any]) -> dict[str, Any]:

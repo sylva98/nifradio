@@ -13,3 +13,7 @@ httpx>=0.27.0
 # 这里显式钉住，避免上游改依赖时悄悄消失。
 starlette>=0.37
 uvicorn>=0.30
+
+# 转码：m4s(AAC)/m3u8/flac 等统一转成 MP3 再推给设备。
+# 优先用系统 ffmpeg，没有就用这个包自带的静态二进制（约 25MB，linux/mac 都有 wheel）。
+imageio-ffmpeg>=0.5.1

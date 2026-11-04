@@ -40,7 +40,7 @@ logger = logging.getLogger("nifradio-mcp")
 
 mcp = FastMCP("NIFradio")
 
-NO_READ_URL = "音频链接是给播放器用的，不要逐字念给用户，只在用户明确要链接时才报出来。"
+NO_READ_URL = "（链接仅供播放器，不要朗读）"
 
 # 小智设备端读取 MCP 返回通常封顶 1024 字节。5 条中文歌名 + 长直链就顶到 1021 了，
 # 歌名再长一点就整包被截断 —— 所以按字节预算拼，宁少列两条也不要发残缺链接。
@@ -143,7 +143,7 @@ async def play_radio(keyword: str) -> str:
     return (
         f"正在播放电台：{st['name']}{now}\n"
         f"{st['stream_url']}\n"
-        "把上面这个链接交给播放器，不要念出来。"
+        "（链接仅供播放器，不要朗读）"
     )
 
 
@@ -191,7 +191,7 @@ async def _play_current(prefix: str = "正在播放") -> str:
         return (
             f"{prefix}：{_short(hit['title'], 32)}\n"
             f"{link}\n"
-            "把上面链接原样交给设备播放工具，不要念出来。"
+            "（链接仅供播放器，不要朗读）"
         )
 
     minutes, seconds = divmod(hit["duration"], 60)
@@ -202,7 +202,7 @@ async def _play_current(prefix: str = "正在播放") -> str:
         f"（{_short(hit['author'], 12)}，{minutes}:{seconds:02d}，"
         f"第 {position}/{total} 首）\n"
         f"{link}\n"
-        "把上面这个链接原样交给设备播放工具，不要逐字念出来。"
+        "（链接仅供播放器，不要朗读）"
     )
 
 

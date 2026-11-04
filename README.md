@@ -65,14 +65,21 @@
 
 ## 工具行为说明
 
-- **B 站音频**：`play_song` 返回的是 m4s 直链（约 785 字符，2 小时过期）。
-- **设备拉流硬性要求（2026-11-04 实测）**：B 站 CDN 节点
-  `upos-sz-mirrorhw01.bilivideo.com` 对不带 Referer 的请求一律返回
-  `403 Forbidden`（nginx HTML 页，323 字节）。**请求必须带
-  `Referer: https://www.bilibili.com/`**，UA 任意（`ESP32-HTTPClient/1.0`
-  实测可过）。带上后 200 / audio/mpeg，Range 分段请求正常。设备端播放器
-  拉流时务必加这个头；蜻蜓 MP3 流无此要求。
-- **蜻蜓 / gitee 歌单**：都是公网 MP3 / OSS 直链，设备直接拉。
+- **播放架构（2026-11-04 起）**：不再是「把链接给设备让它自己拉」，而是走小智的
+  **音频资源协议**——工具结果里除文本外附带 `resource_link`
+  （`uri=resource://read_from_http`，真实地址放 `description`），
+  小智云端再用 `resources/read` 按 100KB 分页把音频读走，解码后推到设备喇叭。
+  入口是 `mcp_audio_server.py`（server.py 桥接拉起的就是它）。
+- **格式与转码（`media.py`）**：先读前 1KB 验身再决定路线
+  - 纯 MP3（蜻蜓直播、Jamendo 歌单）→ **透传**，按 Range 分页，零开销；
+  - m4s / fMP4(AAC) / m3u8(HLS) / flac / ogg → **ffmpeg 转 MP3**（128k 44.1k 立体声），
+    边转边落盘、分页读取渐进可用，首屏约 1~2 秒；
+  - 单次任务用 `AUDIO_MAX_SECONDS`（默认 1800 秒）截断，避免 7 小时合集拖爆；
+  - 对外 `mimeType` 统一报 `audio/mpeg`（转码后一定是 MP3）。
+  - ffmpeg 优先取系统的，缺失时用 `imageio-ffmpeg` 自带的静态二进制。
+- **B 站 CDN 要求**：不带 `Referer: https://www.bilibili.com/` 一律 403
+  （nginx HTML，323 字节）。`media.py` 在服务端统一加上，设备/云端都不用管。
+  蜻蜓 MP3 流无此要求。
 - **播放队列**：进程内记「上次点了什么、放到第几首」，`next_song` 往后翻一个。
 - **字节预算**：小智读回结果约 1024 字节封顶，播放类回复已精简到 951 字节以内。
 
