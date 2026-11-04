@@ -4,6 +4,10 @@
 # 用法（实例重启后，或任何时候想重启服务）：
 #     bash /mnt/workspace/nifradio/boot.sh
 #
+# 改完 gitee 上的电台表，想确认哪些台还能播（不重启服务）：
+#     bash /mnt/workspace/nifradio/boot.sh check
+#     bash /mnt/workspace/nifradio/boot.sh check 摇滚 cctv   # 只看这几个关键词
+#
 # 它做五件事，全部幂等，重复跑没有副作用：
 #   ① 拉最新代码（git 走不通就换镜像压缩包）
 #   ② 准备运行环境：虚拟环境装到 /mnt/workspace（NAS 持久盘，重启不丢），
@@ -79,6 +83,13 @@ try:
 except Exception as exc:
     print(f"缺失（{exc}）—— 会退化为不转码")
 PYEOF
+
+if [ "${1:-}" = "check" ]; then
+  echo "==== 电台体检（只看不改，不动正在跑的服务）===="
+  shift
+  cd "$WS" && "$PY" -u check_stations.py "$@"
+  exit $?
+fi
 
 if [ -s "$WS/.endpoint" ]; then
   echo "  接入点: $(head -c 32 "$WS/.endpoint")…"

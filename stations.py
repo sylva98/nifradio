@@ -178,17 +178,37 @@ def kind_of(row: dict) -> str:
     return "url" if row.get("url") else "none"
 
 
-async def tracks(row: dict) -> list[dict]:
-    """歌单型电台的歌曲列表；其它形态返回空。"""
-    url = (row.get("playlist") or "").strip()
+def _resolve_playlist(url: str) -> str:
+    """把 playlist 字段变成可下载的地址。
+
+    允许三种写法，省得你每次都要写一长串：
+        "https://gitee.com/nif99/gedan/raw/master/rock.json"   完整地址
+        "rock.json"                   ← 与本表同目录（data/rock.json）
+        "./sub/jazz.json"             ← 同目录下的子目录
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.lower().startswith(("http://", "https://")):
+        return u
+    u = u.lstrip("./")
+    if u.startswith(f"{DIR_NAME}/"):
+        u = u[len(DIR_NAME) + 1:]
+    return f"{RAW}/{u}"
+
+
+async def tracks_detail(row: dict) -> tuple[list[dict], str]:
+    """歌单型电台的歌曲列表。第二个返回值是出错原因（没出错就是空串），
+    方便上层告诉用户「是歌单读不出来，不是歌本身挂了」。"""
+    url = _resolve_playlist(row.get("playlist") or "")
     if not url:
-        return []
+        return [], ""
     try:
         data = await _get_json(url)
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], f"歌单读不出来（{type(exc).__name__}）：{url}"
     if not isinstance(data, list):
-        return []
+        return [], f"歌单格式不对，应该是 [{name, url}, …]：{url}"
     out = []
     for item in data:
         if not isinstance(item, dict):
@@ -196,7 +216,15 @@ async def tracks(row: dict) -> list[dict]:
         u = (item.get("url") or "").strip()
         if u:
             out.append({"name": (item.get("name") or "").strip() or "未命名", "url": u})
-    return out
+    if not out:
+        return [], f"歌单里一首可用的都没有：{url}"
+    return out, ""
+
+
+async def tracks(row: dict) -> list[dict]:
+    """歌单型电台的歌曲列表；其它形态返回空。"""
+    items, _err = await tracks_detail(row)
+    return items
 
 
 async def candidates(row: dict) -> list[str]:
@@ -216,8 +244,8 @@ async def first_playable(row: dict) -> dict | None:
     """挑一个真能出声音的地址，返回 {url, title, kind}。全都不行就 None。"""
     kind = kind_of(row)
     if kind == "playlist":
-        items = await tracks(row)
-        for item in items[:3]:
+        items, _err = await tracks_detail(row)
+        for item in items[:5]:
             if await media.alive(item["url"]):
                 return {"url": item["url"], "title": item["name"], "kind": kind}
         return None

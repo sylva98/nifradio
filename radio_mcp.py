@@ -214,26 +214,36 @@ async def play_station(name: str) -> str:
         return await play_radio(name)
 
     row = rows[0]
+    title = str(row.get("name") or "")
+
+    # 歌单型：说清楚「是歌单坏了」还是「歌本身连不上」，这两件事你改的地方不一样
+    if stations.kind_of(row) == "playlist":
+        items, err = await stations.tracks_detail(row)
+        if err:
+            return f"「{title}」的{err}。改完 gitee 上的歌单后 2 分钟内自动生效。"
+        index = -1
+        for i, item in enumerate(items[:5]):
+            if await media.alive(item["url"]):
+                index = i
+                break
+        if index < 0:
+            return f"「{title}」这张歌单前 {min(5, len(items))} 首都连不上，估计这些源整体失效了。"
+        _STATION["row"] = row
+        _STATION["tracks"] = items
+        _STATION["index"] = index
+        note = f"（{items[index]['name']}，第 {index + 1}/{len(items)} 首"
+        if index:
+            note += f"，前 {index} 首失效已跳过"
+        note += "）"
+        return _station_reply("正在播放", title, items[index]["url"], note)
+
     try:
         pick = await stations.first_playable(row)
     except Exception as exc:
         logger.warning("解析电台源失败: %s", exc)
         pick = None
     if not pick:
-        return f"「{row.get('name')}」这个台现在的源都连不上，换个台或者晚点再试。"
-
-    title = row.get("name") or ""
-    if pick["kind"] == "playlist":
-        try:
-            items = await stations.tracks(row)
-        except Exception:
-            items = []
-        index = next((i for i, t in enumerate(items) if t["url"] == pick["url"]), 0)
-        _STATION["row"] = row
-        _STATION["tracks"] = items
-        _STATION["index"] = index
-        extra = f"（{pick['title']}，第 {index + 1}/{len(items)} 首）" if items else ""
-        return _station_reply("正在播放", title, pick["url"], extra)
+        return f"「{title}」这个台现在的源都连不上，换个台或者晚点再试。"
 
     _station_reset(row)
     return _station_reply("正在播放", title, pick["url"])
@@ -323,19 +333,25 @@ async def next_song() -> str:
     上一次 play_song 搜到的那批结果往后播。"""
     tracks = _STATION["tracks"]
     if tracks:
-        nxt = _STATION["index"] + 1
-        if nxt >= len(tracks):
-            row = _STATION["row"] or {}
-            return f"「{row.get('name') or '这张歌单'}」{len(tracks)} 首都放完了，重新点一次或换个台。"
-        _STATION["index"] = nxt
-        cur = tracks[nxt]
         row = _STATION["row"] or {}
-        return _station_reply(
-            "下一首",
-            str(row.get("name") or ""),
-            cur["url"],
-            f"（{cur['name']}，第 {nxt + 1}/{len(tracks)} 首）",
-        )
+        start = _STATION["index"] + 1
+        if start >= len(tracks):
+            return f"「{row.get('name') or '这张歌单'}」{len(tracks)} 首都放完了，重新点一次或换个台。"
+        # 往后找第一个真能播的，最多跳过 5 个失效源，别让「下一曲」卡死在坏链接上
+        last = min(start + 5, len(tracks))
+        for i in range(start, last):
+            cur = tracks[i]
+            if await media.alive(cur["url"]):
+                _STATION["index"] = i
+                note = f"，跳过 {i - start} 个失效源" if i > start else ""
+                return _station_reply(
+                    "下一首",
+                    str(row.get("name") or ""),
+                    cur["url"],
+                    f"（{cur['name']}，第 {i + 1}/{len(tracks)} 首{note}）",
+                )
+        _STATION["index"] = last - 1
+        return f"「{row.get('name') or '这张歌单'}」后面 {last - start} 首都连不上，这些源可能失效了。"
 
     items = _QUEUE["items"]
     if not items:
