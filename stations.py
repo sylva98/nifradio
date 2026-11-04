@@ -40,7 +40,7 @@ TABLES: list[tuple[str, str]] = [
     ("04omnews", "欧美广播"),
 ]
 
-_CACHE_TTL = 600.0
+_CACHE_TTL = float(os.getenv("STATION_CACHE_SEC", "120"))  # 用户常改表，缓存只留 2 分钟
 _cache: dict[str, tuple[float, list[dict]]] = {}
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; nifradio/1.0)"}
@@ -60,7 +60,8 @@ async def _table(key: str) -> list[dict]:
     if hit and time.time() - hit[0] < _CACHE_TTL:
         return hit[1]
     try:
-        rows = await _get_json(f"{RAW}/{key}.json")
+        # 带一个时间戳绕开 gitee/CDN 的缓存，保证你刚改完立刻能读到
+        rows = await _get_json(f"{RAW}/{key}.json?t={int(time.time())}")
     except Exception:
         return hit[1] if hit else []
     rows = [r for r in rows if isinstance(r, dict) and r.get("name")]
@@ -170,4 +171,15 @@ async def first_playable(row: dict) -> dict | None:
     for url in urls[:5]:
         if await media.alive(url):
             return {"url": url, "title": str(row.get("name") or ""), "kind": kind}
+
+    # 单条源：短请求被拒不代表播不了（有的 CDN 对 HEAD/小 Range 敏感），
+    # 真读一小段再判一次，避免把「慢但能用」的台误判成坏的。
+    if kind == "url" and urls:
+        url = urls[0]
+        try:
+            data, _eof = await asyncio.wait_for(media.read_page(url, 0, 4095), 25)
+            if data:
+                return {"url": url, "title": str(row.get("name") or ""), "kind": kind}
+        except Exception:
+            pass
     return None
