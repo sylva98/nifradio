@@ -125,6 +125,28 @@ async def find_radio_station(keyword: str, limit: int = 5) -> str:
     return _fit("搜到这些电台：", _station_lines(stations), NO_READ_URL)
 
 
+@mcp.tool()
+async def play_radio(keyword: str) -> str:
+    """直接打开某个电台开始播放。用户说「放清晨电台」「听交通广播」「开个新闻台」
+    这类「想直接听某个台」的话时用，一步到位不用先列分类。"""
+    try:
+        stations = await radio_core.search_stations(keyword, 5)
+    except Exception as exc:
+        logger.warning("放台失败: %s", exc)
+        return f"电台搜索失败（{exc}），过几秒再说一次。"
+
+    if not stations:
+        return f"没找到「{keyword}」这样的电台，换个说法试试，比如「音乐」「交通」「新闻」。"
+
+    st = stations[0]
+    now = f"（正在播：{st['now_playing']}）" if st.get("now_playing") else ""
+    return (
+        f"正在播放电台：{st['name']}{now}\n"
+        f"{st['stream_url']}\n"
+        "把上面这个链接交给播放器，不要念出来。"
+    )
+
+
 def _short(text: str, limit: int = 28) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"

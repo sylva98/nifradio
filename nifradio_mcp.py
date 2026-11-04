@@ -12,9 +12,11 @@ import os
 
 def main() -> None:
     os.environ.setdefault("STREAM_PROXY", "0")
-    from radio_mcp import mcp
+    # 走「音频资源」入口：工具结果里带 resource_link，小智云端会把音频
+    # 分页读走再推给设备喇叭（不需要设备端自己拉流，也不用改固件）。
+    import mcp_audio_server
 
-    mcp.run(transport="stdio")
+    mcp_audio_server.main()
 
 
 if __name__ == "__main__":

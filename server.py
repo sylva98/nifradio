@@ -104,7 +104,9 @@ def start_bridge(endpoint: str) -> tuple[bool, str]:
         _LOG.clear()
         try:
             _PROC = subprocess.Popen(
-                [sys.executable, "-u", "mcp_pipe.py", "radio_mcp.py"],
+                # mcp_audio_server.py：在小智「音频资源」协议上跑工具层，
+                # 工具结果会附带 resource_link，云端把音频分页读走推给设备。
+                [sys.executable, "-u", "mcp_pipe.py", "mcp_audio_server.py"],
                 cwd=str(_HERE),
                 env=env,
                 stdout=subprocess.PIPE,
