@@ -23,13 +23,16 @@ import time
 from collections import deque
 from pathlib import Path
 
+import diag
 import stream_proxy
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 _HERE = Path(__file__).resolve().parent
+# 试音文件目录（radio_mcp 的 selftest_audio 会把 3 秒提示音生成到这里）
+_SELF_DIR = _HERE / ".cache" / "selftest"
 # 父进程学到的对外域名要落一份到磁盘：MCP 跑在子进程里，
 # 它自己没经过 HTTP 请求，拿不到 Host 头。
 _BASE_FILE = Path("/tmp/nif_public_base")
@@ -178,7 +181,30 @@ async def api_disconnect(request: Request) -> JSONResponse:
 
 async def api_status(request: Request) -> JSONResponse:
     _learn_base(request)
-    return JSONResponse({"status": _status(), "log": list(_LOG)[-60:]})
+    return JSONResponse({
+        "status": _status(),
+        "log": list(_LOG)[-60:],
+        "diag": diag.recent(40),
+    })
+
+
+async def api_diag(request: Request) -> JSONResponse:
+    _learn_base(request)
+    return JSONResponse({"lines": diag.recent(200)})
+
+
+async def serve_selftest(request: Request) -> FileResponse | PlainTextResponse:
+    """试音文件：radio_mcp 生成 3 秒提示音，这里按普通 HTTP 提供，
+    让音频资源层的分页读取能像对待网络音频一样处理它。"""
+    name = request.path_params.get("name", "")
+    try:
+        target = (_SELF_DIR / name).resolve()
+        target.relative_to(_SELF_DIR.resolve())
+    except (ValueError, OSError):
+        return PlainTextResponse("not found", status_code=404)
+    if not target.is_file():
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(target, media_type="audio/mpeg")
 
 
 async def handle_health(request: Request) -> PlainTextResponse:
@@ -251,6 +277,12 @@ font-family:ui-monospace,Menlo,monospace}
   </div>
 
   <div class="card">
+    <label>诊断：小智有没有真的来取音频</label>
+    <p class="hint">对它说一句「播放周杰伦」，下面应该依次出现：工具 play_song → 取音频 第1页 → 第2页 … → 读完。只看到「工具」没有「取音频」，说明云端只念了文本、没来拿音频。</p>
+    <pre id="diag" style="height:300px;background:#fbfbf9;color:#2c2c2a;border:1px solid rgba(0,0,0,.08)">还没有记录。</pre>
+  </div>
+
+  <div class="card">
     <label>连上之后怎么用</label>
     <ol class="steps">
       <li>回到小智控制台的扩展能力页，刷新一下，能看到工具列表就说明通了。</li>
@@ -286,6 +318,8 @@ async function poll(){
     const j = await r.json();
     const s = j.status;
     document.getElementById('log').textContent = (j.log && j.log.length) ? j.log.join('\\n') : '还没有日志…';
+    const dg = document.getElementById('diag');
+    if(dg) dg.textContent = (j.diag && j.diag.length) ? j.diag.join('\\n') : '还没有记录。对它说一句「播放周杰伦」试试。';
     if(!s.running) setState('','未运行');
     else if(s.connected) setState('on','已连上小智 · 运行 ' + s.uptime + ' 秒');
     else setState('wait','桥接进程在跑，等待握手…');
@@ -306,8 +340,10 @@ app = Starlette(
         Route("/api/connect", api_connect, methods=["POST"]),
         Route("/api/disconnect", api_disconnect, methods=["POST"]),
         Route("/api/status", api_status, methods=["GET"]),
+        Route("/api/diag", api_diag, methods=["GET"]),
         Route("/health", handle_health, methods=["GET"]),
         Route("/p/{token}", stream_proxy.handle_stream, methods=["GET", "HEAD"]),
+        Route("/s/{name}", serve_selftest, methods=["GET", "HEAD"]),
     ]
 )
 

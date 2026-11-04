@@ -15,13 +15,19 @@ import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 import bili_core
+import diag
 import media
 import radio_core
 import stations
+
+# 试音文件放这里，由 server.py 的 /s/{name} 提供 HTTP 访问。
+# 走 HTTP 而不是直接读文件，是为了让试音和真实音频走完全相同的分页链路。
+_SELF_DIR = Path(__file__).resolve().parent / ".cache" / "selftest"
 
 # stream_proxy 只在「有公网 HTTP 服务」时才需要。魔搭托管的是纯 STDIO 进程，
 # 没有额外 HTTP 端口，此时直接把 B 站原始音频地址交给设备——实测 m4s 用裸 UA、
@@ -135,7 +141,7 @@ async def play_radio(keyword: str) -> str:
         hits = await radio_core.search_stations(keyword, 5)
     except Exception as exc:
         logger.warning("放台失败: %s", exc)
-        return f"电台搜索失败（{exc}），过几秒再说一次。"
+        return "电台搜索失败，过几秒再说一次（E_SEARCH）。"
 
     if not hits:
         return f"没找到「{keyword}」这样的电台，换个说法试试，比如「音乐」「交通」「新闻」。"
@@ -220,7 +226,7 @@ async def play_station(name: str) -> str:
     if stations.kind_of(row) == "playlist":
         items, err = await stations.tracks_detail(row)
         if err:
-            return f"「{title}」的{err}。改完 gitee 上的歌单后 2 分钟内自动生效。"
+            return f"「{title}」的{err}。改完 gitee 上的歌单后 2 分钟内自动生效（E_PLAYLIST）。"
         index = -1
         for i, item in enumerate(items[:5]):
             if await media.alive(item["url"]):
@@ -243,7 +249,7 @@ async def play_station(name: str) -> str:
         logger.warning("解析电台源失败: %s", exc)
         pick = None
     if not pick:
-        return f"「{title}」这个台现在的源都连不上，换个台或者晚点再试。"
+        return f"「{title}」这个台现在的源都连不上，换个台或者晚点再试（E_SOURCE）。"
 
     _station_reset(row)
     return _station_reply("正在播放", title, pick["url"])
@@ -280,7 +286,7 @@ async def _play_current(prefix: str = "正在播放") -> str:
         link, _info = await _play_link(hit["bvid"])
     except Exception as exc:
         logger.warning("取播放地址失败: %s", exc)
-        return f"找到《{_short(hit['title'])}》了，但取播放地址失败，稍后再试。"
+        return f"找到《{_short(hit['title'])}》了，但取不到播放地址，稍后再试（E_RESOLVE）。"
 
     # 无代理时给的是 B 站原始地址（约 785 字符），再堆作者/时长会顶破
     # 小智那 1024 字节的结果上限，所以精简成「标题 + 链接 + 一句交代」。
@@ -315,8 +321,8 @@ async def play_song(keyword: str) -> str:
     try:
         rows = await bili_core.bili.search(keyword, _QUEUE_SIZE)
     except Exception as exc:
-        logger.warning("点歌搜索失败: %s", exc)
-        return f"搜歌没成功（{exc}），过几秒再跟我说一次。"
+        logger.warning("搜歌失败: %s", exc)
+        return "搜歌没成功，过几秒再跟我说一次（E_SEARCH）。"
 
     if not rows:
         return f"没找到「{keyword}」相关的歌，换个说法试试，比如「周杰伦 晴天」。"
@@ -457,6 +463,52 @@ async def play_on_computer(url: str) -> str:
         logger.warning("调用播放器失败: %s", exc)
         return f"播放器启动失败：{exc}"
     return f"已在这台电脑上开始播放（{player.split('/')[-1]}）。"
+
+
+def _ensure_selftest() -> Path | None:
+    """生成一段 3 秒 440Hz 提示音（MP3），用来单独验证播放链路。"""
+    try:
+        _SELF_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    target = _SELF_DIR / "selftest.mp3"
+    if target.exists() and target.stat().st_size > 4096:
+        return target
+    ff = media.ffmpeg_path()
+    if not ff:
+        diag.log("selftest", state="失败", detail="没有可用的 ffmpeg")
+        return None
+    cmd = [
+        ff, "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        "-acodec", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-f", "mp3", "-y", str(target),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=40,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except Exception as exc:
+        logger.warning("生成试音失败: %s", exc)
+        diag.log("selftest", state="失败", detail=str(exc))
+        return None
+    if not target.exists() or target.stat().st_size <= 4096:
+        diag.log("selftest", state="失败", detail="文件过小")
+        return None
+    diag.log("selftest", state="就绪", detail=f"{target.stat().st_size}B")
+    return target
+
+
+@mcp.tool()
+async def selftest_audio() -> str:
+    """试音：交给播放器一段 3 秒固定提示音，用来判断「取音频 → 设备出声」这条链路通不通。
+    用户说「试音」「测试一下能不能出声」「检查喇叭」「有没有声音」时用。
+    这段能响，说明协议和播放都正常，问题只可能出在具体音源上；
+    这段也不响，说明是播放链路本身的问题，跟点哪首歌无关。"""
+    target = _ensure_selftest()
+    if target is None:
+        return "试音文件生成失败（这台机器没有可用的 ffmpeg），跳过这步。"
+    port = os.getenv("PORT", "8080").strip() or "8080"
+    return f"试音：3 秒提示音\nhttp://127.0.0.1:{port}/s/{target.name}\n{NO_READ_URL}"
 
 
 if __name__ == "__main__":

@@ -27,14 +27,39 @@ import base64
 import json
 import os
 import sys
+import time
 import traceback
 from typing import Any
 
+import diag
 import media
 
 RES_URI = "resource://read_from_http"
 PAGE = 102400  # 100KB，与小智 Go 服务端示例一致
 DONE = base64.b64encode(b"[DONE]").decode()
+
+# 按 URL 累计「这次播放总共读了几页、多少字节」，读完打一条汇总，
+# 用来判断云端是「读完了」还是「读了两页就放弃」。
+_READS: dict[str, dict[str, Any]] = {}
+
+
+def _short_url(url: str) -> str:
+    base = url.split("?")[0]
+    return base if len(base) <= 64 else base[:61] + "…"
+
+
+def _short_args(arguments: dict[str, Any]) -> str:
+    try:
+        text = json.dumps(arguments, ensure_ascii=False)
+    except Exception:
+        text = str(arguments)
+    return text if len(text) <= 60 else text[:57] + "…"
+
+
+def _magic(data: bytes) -> str:
+    if not data:
+        return "-"
+    return data[:4].hex()
 
 
 def _mime_for(url: str) -> str:
@@ -78,7 +103,13 @@ class Server:
         return self._tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        result = await self.fastmcp.call_tool(name, arguments or {})
+        started = time.monotonic()
+        try:
+            result = await self.fastmcp.call_tool(name, arguments or {})
+        except Exception as exc:
+            diag.log("tool_error", tool=name, args=_short_args(arguments or {}),
+                     err=f"{type(exc).__name__}: {exc}")
+            raise
         if isinstance(result, tuple):  # (content, structured)
             result = result[0]
         if isinstance(result, dict):
@@ -100,7 +131,30 @@ class Server:
             })
             # 提前起转码：等云端来分页读时首屏已有数据，省掉几秒等待
             asyncio.create_task(media.warm(urls[0]))
+
+        diag.log(
+            "tool",
+            tool=name,
+            args=_short_args(arguments or {}),
+            ms=int((time.monotonic() - started) * 1000),
+            text=text.strip().replace("\n", " / ")[:110],
+            url=_short_url(urls[0]) if len(urls) == 1 else "",
+        )
+        if len(urls) == 1:
+            asyncio.create_task(self._watch_taken(urls[0], name))
         return {"content": blocks}
+
+    @staticmethod
+    async def _watch_taken(url: str, tool: str, wait: int = 8) -> None:
+        """工具返回后盯 8 秒：云端没来取音频就记一条告警。
+
+        「小智说自己在放歌，但没声音」最常见的成因就是云端只念了文本、
+        没走 resources/read —— 这条记录能直接把它和「取到了但播不出」分开。
+        """
+        await asyncio.sleep(wait)
+        stat = _READS.get(url)
+        if not stat or stat["pages"] == 0:
+            diag.log("no_read", url=_short_url(url), tool=tool, wait=wait)
 
     async def read_resource(self, params: dict[str, Any]) -> dict[str, Any]:
         uri = params.get("uri", "")
@@ -113,7 +167,28 @@ class Server:
         start = int(args.get("start") or 0)
         end = int(args.get("end") or (start + PAGE - 1))
 
-        data, _eof = await _read_page(url, start, end)
+        try:
+            data, _eof = await _read_page(url, start, end)
+        except Exception as exc:
+            diag.log("read_err", url=_short_url(url),
+                     err=f"{type(exc).__name__}: {exc}")
+            raise
+
+        diag.log("read", url=_short_url(url), page=start // PAGE + 1,
+                 start=start, end=end, n=len(data), eof=_eof, head=_magic(data))
+
+        stat = _READS.get(url)
+        if stat is None:
+            stat = {"pages": 0, "bytes": 0, "t0": time.monotonic()}
+            _READS[url] = stat
+        stat["pages"] += 1
+        stat["bytes"] += len(data)
+        if _eof:
+            diag.log("read_end", url=_short_url(url), pages=stat["pages"],
+                     bytes=stat["bytes"],
+                     secs=round(time.monotonic() - stat["t0"], 1))
+            _READS.pop(url, None)
+
         blob = base64.b64encode(data).decode() if data else DONE
         return {
             "contents": [{
