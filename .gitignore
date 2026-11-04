@@ -11,3 +11,5 @@ __pycache__/
 nifradio_mcp.egg-info/
 build/
 dist/
+.venv/
+.cache/

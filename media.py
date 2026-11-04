@@ -40,12 +40,22 @@ REFERER = "https://www.bilibili.com/"
 
 MAX_SECONDS = int(os.getenv("AUDIO_MAX_SECONDS", "1800"))
 PAGE = 102400
-CACHE_TTL = 3 * 3600  # 缓存最多留 3 小时，避免磁盘越积越多
+CACHE_TTL = 3 * 3600          # 缓存最多留 3 小时
+MAX_CACHE_MB = int(os.getenv("AUDIO_CACHE_MB", "512"))  # 缓存总量上限
 
-CACHE_DIR = Path(
-    os.getenv("AUDIO_CACHE_DIR")
-    or str(Path(tempfile.gettempdir()) / "nifradio-media")
-)
+
+def _default_cache_dir() -> Path:
+    """优先放在代码同级的 .cache（/mnt/workspace 是 NAS 持久盘，重启不丢），
+    建不出来才退回临时目录。"""
+    try:
+        cand = Path(__file__).resolve().parent / ".cache" / "media"
+        cand.mkdir(parents=True, exist_ok=True)
+        return cand
+    except OSError:
+        return Path(tempfile.gettempdir()) / "nifradio-media"
+
+
+CACHE_DIR = Path(os.environ.get("AUDIO_CACHE_DIR") or _default_cache_dir())
 
 _plan_cache: dict[str, str] = {}
 _jobs: dict[str, "Job"] = {}
@@ -292,14 +302,38 @@ class Job:
 
 
 def _gc_cache() -> None:
-    """清理过期的缓存文件（每次新建任务顺手做一次）。"""
+    """清缓存：先删过期文件，再按总量上限从旧到新删。
+
+    单首 30 分钟 MP3 约 28MB，连续点十几首就能吃掉几百 MB，
+    所以除了 TTL 还要有总量闸门，避免把 /mnt/workspace 撑满。
+    """
     try:
-        now = time.time()
-        for f in CACHE_DIR.glob("*"):
-            if f.is_file() and now - f.stat().st_mtime > CACHE_TTL:
-                f.unlink(missing_ok=True)
+        files = [f for f in CACHE_DIR.glob("*") if f.is_file()]
     except OSError:
-        pass
+        return
+
+    now = time.time()
+    alive: list[tuple[float, int, Path]] = []
+    for f in files:
+        try:
+            mtime = f.stat().st_mtime
+            size = f.stat().st_size
+        except OSError:
+            continue
+        if now - mtime > CACHE_TTL:
+            f.unlink(missing_ok=True)
+            continue
+        alive.append((mtime, size, f))
+
+    total = sum(size for _, size, _ in alive)
+    limit = MAX_CACHE_MB * 1024 * 1024
+    if total <= limit:
+        return
+    for _mtime, size, f in sorted(alive):        # 旧文件先删
+        if total <= limit:
+            break
+        f.unlink(missing_ok=True)
+        total -= size
 
 
 async def _job_for(url: str) -> Job:
