@@ -19,7 +19,9 @@ import subprocess
 from mcp.server.fastmcp import FastMCP
 
 import bili_core
+import media
 import radio_core
+import stations
 
 # stream_proxy 只在「有公网 HTTP 服务」时才需要。魔搭托管的是纯 STDIO 进程，
 # 没有额外 HTTP 端口，此时直接把 B 站原始音频地址交给设备——实测 m4s 用裸 UA、
@@ -127,18 +129,19 @@ async def find_radio_station(keyword: str, limit: int = 5) -> str:
 
 @mcp.tool()
 async def play_radio(keyword: str) -> str:
-    """直接打开某个电台开始播放。用户说「放清晨电台」「听交通广播」「开个新闻台」
-    这类「想直接听某个台」的话时用，一步到位不用先列分类。"""
+    """打开蜻蜓 FM 里搜到的电台开始播放。用户说「放清晨电台」「听交通广播」
+    「开个新闻台」这类话、且「我自己电台表」里没有对应台时用它。"""
     try:
-        stations = await radio_core.search_stations(keyword, 5)
+        hits = await radio_core.search_stations(keyword, 5)
     except Exception as exc:
         logger.warning("放台失败: %s", exc)
         return f"电台搜索失败（{exc}），过几秒再说一次。"
 
-    if not stations:
+    if not hits:
         return f"没找到「{keyword}」这样的电台，换个说法试试，比如「音乐」「交通」「新闻」。"
 
-    st = stations[0]
+    st = hits[0]
+    _station_reset()          # 切到蜻蜓，我的电台歌单队列作废
     now = f"（正在播：{st['now_playing']}）" if st.get("now_playing") else ""
     return (
         f"正在播放电台：{st['name']}{now}\n"
@@ -150,6 +153,90 @@ async def play_radio(keyword: str) -> str:
 def _short(text: str, limit: int = 28) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# ---------------------------------------------------------------- 我自己的电台表
+# 用户在 gitee 上维护的那几张表（华语音乐 / 欧美音乐 / 华语新闻 / 欧美广播）。
+# 歌单型电台（playlist 指向一个歌曲列表）要一首一首放，所以记一下当前放到第几首。
+_STATION: dict = {"row": None, "tracks": [], "index": -1}
+
+
+def _station_reset(row: dict | None = None) -> None:
+    _STATION["row"] = row
+    _STATION["tracks"] = []
+    _STATION["index"] = -1
+
+
+def _station_reply(prefix: str, title: str, url: str, extra: str = "") -> str:
+    head = f"{prefix}：{title}{extra}"
+    return f"{head}\n{url}\n{NO_READ_URL}"
+
+
+@mcp.tool()
+async def list_my_stations(keyword: str = "", limit: int = 6) -> str:
+    """列出「我自己电台表」里的电台（gitee 上那份，含华语音乐、欧美音乐、华语新闻、
+    欧美广播四类）。用户说「我有哪些台」「列一下我的电台」「有什么摇滚台」时用。
+    keyword 可留空，也可填台名/分类片段（如「摇滚」「新闻」「欧美」）做筛选。"""
+    try:
+        rows = await stations.search(keyword, max(1, min(limit, 10)))
+    except Exception as exc:
+        logger.warning("读取电台表失败: %s", exc)
+        return f"读取我的电台表失败：{exc}"
+    if not rows:
+        return f"我的电台表里没有和「{keyword}」相关的台。" if keyword else "电台表是空的，检查一下 gitee 上的 data 目录。"
+
+    lines = []
+    for i, row in enumerate(rows, 1):
+        kind = stations.kind_of(row)
+        mark = {"playlist": "歌单", "urls": "多源", "url": "直播", "none": "空"}[kind]
+        note = f"（{_short(row.get('notes') or '', 16)}）" if row.get("notes") else ""
+        lines.append(f"{i}. {row.get('name')}［{row.get('category') or '未分类'}·{mark}］{note}")
+    return _fit(f"我的电台（关键词「{keyword or '全部'}」）：", lines, "说出台名即可播放。")
+
+
+@mcp.tool()
+async def play_station(name: str) -> str:
+    """播放「我自己电台表」里的某个台，按台名模糊匹配（如「华语摇滚」「CCTV-1」
+    「亚洲电台」）。用户点自己表里的台、或者说的话和表里台名对得上时**优先用这个**，
+    比蜻蜓搜台准。歌单型电台会自动从第一首开始放，「下一曲」接着放。"""
+    name = (name or "").strip()
+    if not name:
+        return "想听哪个台？说个台名。"
+
+    try:
+        rows = await stations.search(name, 3)
+    except Exception as exc:
+        logger.warning("读取电台表失败: %s", exc)
+        return f"读取我的电台表失败（{exc}），先用蜻蜓搜台试试。"
+
+    if not rows:
+        # 表里没有 → 退回蜻蜓，用户体验上就是「说个台名也能放」
+        return await play_radio(name)
+
+    row = rows[0]
+    try:
+        pick = await stations.first_playable(row)
+    except Exception as exc:
+        logger.warning("解析电台源失败: %s", exc)
+        pick = None
+    if not pick:
+        return f"「{row.get('name')}」这个台现在的源都连不上，换个台或者晚点再试。"
+
+    title = row.get("name") or ""
+    if pick["kind"] == "playlist":
+        try:
+            items = await stations.tracks(row)
+        except Exception:
+            items = []
+        index = next((i for i, t in enumerate(items) if t["url"] == pick["url"]), 0)
+        _STATION["row"] = row
+        _STATION["tracks"] = items
+        _STATION["index"] = index
+        extra = f"（{pick['title']}，第 {index + 1}/{len(items)} 首）" if items else ""
+        return _station_reply("正在播放", title, pick["url"], extra)
+
+    _station_reset(row)
+    return _station_reply("正在播放", title, pick["url"])
 
 
 # ---------------------------------------------------------------- 播放队列
@@ -225,13 +312,31 @@ async def play_song(keyword: str) -> str:
         return f"没找到「{keyword}」相关的歌，换个说法试试，比如「周杰伦 晴天」。"
 
     _queue_reset(keyword, rows)
+    _station_reset()          # 换成歌手点歌，我的电台歌单队列作废
     return await _play_current()
 
 
 @mcp.tool()
 async def next_song() -> str:
     """播放列表里的下一首。用户说「下一曲」「下一首」「换一首」「这首不好听」
-    时调用，会接着上一次 play_song 搜到的那批结果往后播。"""
+    时调用。歌单型电台（如「华语摇滚」）会顺着歌单往后放；点的是歌手则接着
+    上一次 play_song 搜到的那批结果往后播。"""
+    tracks = _STATION["tracks"]
+    if tracks:
+        nxt = _STATION["index"] + 1
+        if nxt >= len(tracks):
+            row = _STATION["row"] or {}
+            return f"「{row.get('name') or '这张歌单'}」{len(tracks)} 首都放完了，重新点一次或换个台。"
+        _STATION["index"] = nxt
+        cur = tracks[nxt]
+        row = _STATION["row"] or {}
+        return _station_reply(
+            "下一首",
+            str(row.get("name") or ""),
+            cur["url"],
+            f"（{cur['name']}，第 {nxt + 1}/{len(tracks)} 首）",
+        )
+
     items = _QUEUE["items"]
     if not items:
         return "现在还没在放歌，先说一首想听的，比如「放周杰伦的歌」。"
@@ -246,6 +351,14 @@ async def next_song() -> str:
 @mcp.tool()
 async def replay_song() -> str:
     """重放当前这首（从头开始）。用户说「重放」「再放一遍」「刚才那首再来一次」时用。"""
+    tracks = _STATION["tracks"]
+    if tracks and 0 <= _STATION["index"] < len(tracks):
+        cur = tracks[_STATION["index"]]
+        row = _STATION["row"] or {}
+        return _station_reply(
+            "重放", str(row.get("name") or ""), cur["url"],
+            f"（{cur['name']}，第 {_STATION['index'] + 1}/{len(tracks)} 首）",
+        )
     if not _QUEUE["items"]:
         return "现在还没在放歌，先说一首想听的。"
     return await _play_current("重放")

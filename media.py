@@ -67,9 +67,13 @@ _FFMPEG_READY = False
 
 # ---------------------------------------------------------------- 工具
 
+def _is_bili(url: str) -> bool:
+    return "bilivideo" in url or "bilibili" in url or "biliapi" in url
+
+
 def _headers(url: str, start: int | None = None, end: int | None = None) -> dict[str, str]:
     headers = {"User-Agent": UA}
-    if "bilivideo" in url or "bilibili" in url or "biliapi" in url:
+    if _is_bili(url):
         headers["Referer"] = REFERER
         headers["Origin"] = "https://www.bilibili.com"
     if start is not None and end is not None:
@@ -228,11 +232,12 @@ class Job:
         if self.path.exists():
             self.path.unlink(missing_ok=True)
 
-        header_block = (
-            f"User-Agent: {UA}\r\n"
-            f"Referer: {REFERER}\r\n"
-            f"Origin: https://www.bilibili.com\r\n"
-        )
+        # 只有 B 站 CDN 要 Referer；别的源（CNR / CCTV / 各省台）带上反而被 403。
+        # 实测：ngcdn001.cnr.cn 的 ts 片段，无 Referer 200 / 252KB，带 B 站 Referer 直接 403。
+        lines = [f"User-Agent: {UA}"]
+        if _is_bili(self.url):
+            lines += [f"Referer: {REFERER}", "Origin: https://www.bilibili.com"]
+        header_block = "\r\n".join(lines) + "\r\n"
         cmd = [
             ff, "-hide_banner", "-loglevel", "error", "-nostdin",
             # 注意：不要加 -protocol_whitelist / -allowed_extensions。
@@ -369,3 +374,24 @@ async def warm(url: str) -> None:
             await _job_for(url)
     except Exception:
         pass
+
+
+async def alive(url: str, timeout: float = 12.0) -> bool:
+    """快速判断这个地址能不能取到东西（用于多候选源挑一个能用的）。
+
+    只读头 32 字节：M3U8 清单读到 `#EXTM3U` 算活，直链读到任意字节算活，
+    4xx/超时算死。比真跑一遍 ffmpeg 快得多。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=_headers(url, 0, 1023)) as resp:
+                if resp.status_code >= 400:
+                    return False
+                head = b""
+                async for part in resp.aiter_bytes():
+                    head += part
+                    if len(head) >= 32:
+                        break
+        return bool(head)
+    except Exception:
+        return False

@@ -2,19 +2,37 @@
 
 把浏览器插件里的电台、歌单和 B 站点歌接进小智 AI，让设备自己出声。
 
-服务是标准的 **STDIO 型 MCP**，共 10 个工具：
+服务是标准的 **STDIO 型 MCP**，共 13 个工具：
+
+**三类音源（用户自己的玩法，缺一不可）**
+
+| 来源 | 说明 | 谁在维护 |
+|---|---|---|
+| 蜻蜓 FM | 13 个分类、按台名搜台，`64k.mp3` 直播流 | 平台 |
+| 我自己的电台表 | gitee 上四张 JSON（华语音乐 / 欧美音乐 / 华语新闻 / 欧美广播），台里可能是单流、多候选源（CCTV）、或指向一个歌单 | **用户自己**，随时改 |
+| B 站点歌 | 按歌手/歌名搜，取音频流 | 平台 |
 
 | 工具 | 用途 |
 |---|---|
+| `list_my_stations` | **列出我自己电台表里的台**（可按台名/分类筛选） |
+| `play_station` | **播我自己表里的台**（如「华语摇滚」「CCTV-1」）；表里没有就自动退回蜻蜓 |
 | `play_song` | 点歌（说「放周杰伦」直接播） |
-| `next_song` / `replay_song` | 下一首 / 重播当前 |
+| `next_song` / `replay_song` | 下一首 / 重播当前（歌单型电台会顺着歌单往下放） |
 | `list_radio_categories` | 列出蜻蜓的 13 个广播分类 |
 | `list_radio_stations` | 某个分类下的电台 |
 | `find_radio_station` | 按名字找电台（「清晨」「交通台」） |
+| `play_radio` | 直接开蜻蜓某个台 |
 | `search_song` | 在 B 站搜歌，返回候选 |
 | `get_song_url` | 取某一首的音频地址 |
 | `search_open_music` | 开放版权曲库（Jamendo） |
 | `play_on_computer` | 在本机播放器里放（仅本地调试用） |
+
+**我的电台表怎么读**（`stations.py`）：四张表在 `gitee.com/nif99/niffm/raw/master/data/`，
+10 分钟缓存，你在 gitee 上改完下一次查询就生效。条目三种形态分别处理：
+
+- `"url"` → 单条直链，直接用
+- `"urls": [...]` → 多候选（CCTV 这类），逐个验活取第一个能出的
+- `"playlist": "...json"` → 歌单，从第一首开始放，「下一曲」往后翻
 
 ## MCP Server Config
 
