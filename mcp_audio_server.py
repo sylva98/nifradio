@@ -257,6 +257,15 @@ async def serve() -> None:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # 协议级全量跟踪：云端到底跟我们协商了什么（tools/list、resources/list、
+        # resources/read…）。只有 tools/call 而没有 resources/* 就是平台不支持取流。
+        method = str(msg.get("method") or "")
+        if method and not method.startswith("notifications/"):
+            params = msg.get("params")
+            name = ""
+            if isinstance(params, dict):
+                name = str(params.get("name") or params.get("uri") or "")
+            diag.log("rpc", m=method, name=name)
         try:
             reply = await server.handle(msg)
         except Exception as exc:  # 单个请求出错不要拖垮整个进程
