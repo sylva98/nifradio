@@ -26,6 +26,10 @@ WS="${NIFRADIO_HOME:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
 [ -n "$WS" ] && [ -d "$WS" ] || { echo "找不到工作目录，请设 NIFRADIO_HOME=/你的/仓库/路径"; exit 1; }
 cd "$WS" || exit 1
 
+# 运行环境：魔搭 Notebook 会自己关机，需要保活 + Jupyter 自启扩展；
+# 普通云服务器 24 小时开机，用 systemd 自启，保活完全不需要（还会白占内存）。
+if [ -d /mnt/workspace ]; then RUNTIME=modelscope; else RUNTIME=server; fi
+
 echo "① 更新代码…"
 if git pull -q --ff-only 2>/dev/null; then
   echo "  已是最新（$(git log --oneline -1 2>/dev/null | cut -c1-7)）"
@@ -102,7 +106,8 @@ else
   echo "  ⚠ 缺少 .endpoint（接入点没写进来），服务起来了也连不上小智"
 fi
 
-echo "③ 安装开机自启（只做一次，之后就自动了）…"
+if [ "$RUNTIME" = modelscope ]; then
+echo "③ 安装开机自启（魔搭：Jupyter 服务端扩展）…"
 SYS_PY=$(command -v python3)
 AUTO_PKG="$WS/autostart"
 AUTO_CFG="$AUTO_PKG/jupyter-config/jupyter_server_config.d/nifradio_autostart.json"
@@ -132,6 +137,9 @@ for d in /usr/local/etc/jupyter/jupyter_server_config.d \
          /etc/jupyter/jupyter_server_config.d; do
   mkdir -p "$d" 2>/dev/null && cp -f "$AUTO_CFG" "$d/" 2>/dev/null
 done
+else
+  echo "③ 普通服务器：自启交给 systemd（跳过魔搭的 Jupyter 扩展）"
+fi
 
 echo "④ 重启服务…"
 pkill -f '[s]erver\.py' 2>/dev/null
@@ -149,13 +157,40 @@ for f in "$WS/radio.log" "$WS/keepalive.log"; do
   fi
 done
 
-nohup bash -c "while true; do cd $WS && $PY server.py; sleep 5; done" \
-  >> "$WS/radio.log" 2>&1 &
-echo "  已启动，等 25 秒连小智…"
+if [ "$RUNTIME" = modelscope ]; then
+  nohup bash -c "while true; do cd $WS && $PY server.py; sleep 5; done" \
+    >> "$WS/radio.log" 2>&1 &
+  echo "  已启动，等 25 秒连小智…"
 
-if [ -f keepalive.py ]; then
-  nohup "$PY" keepalive.py >> "$WS/keepalive.log" 2>&1 &
-  echo "  保活已挂上（后台内核循环执行，日志 keepalive.log）"
+  if [ -f keepalive.py ]; then
+    nohup "$PY" keepalive.py >> "$WS/keepalive.log" 2>&1 &
+    echo "  保活已挂上（魔搭专用：后台内核循环，日志 keepalive.log）"
+  fi
+else
+  # 普通服务器：交给 systemd —— 开机自启、崩溃 5 秒自愈，比 nohup 循环可靠
+  cat > /etc/systemd/system/nifradio.service <<UNIT
+[Unit]
+Description=NifRadio MCP audio server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$WS
+ExecStart=$PY -u $WS/server.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload 2>/dev/null
+  systemctl enable nifradio >/dev/null 2>&1
+  systemctl restart nifradio 2>/dev/null || systemctl start nifradio
+  echo "  已注册 systemd 服务 nifradio（开机自启，崩溃自愈）"
+  echo "  看状态：systemctl status nifradio    看日志：journalctl -u nifradio -f"
+  echo "  等 25 秒连小智…"
 fi
 
 sleep 25
