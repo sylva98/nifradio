@@ -19,8 +19,12 @@
 #   ⑤ 等 25 秒后打印健康状态
 set -u
 
-WS=/mnt/workspace/nifradio
-cd "$WS" 2>/dev/null || { echo "找不到 $WS，请先把仓库放到这里"; exit 1; }
+# 工作目录：优先 NIFRADIO_HOME，否则用脚本自身所在目录。
+# 魔搭上脚本就在 /mnt/workspace/nifradio，两种方式结果一致；
+# 搬到普通服务器（如 /opt/nifradio）时无需改脚本，直接 bash boot.sh 即可。
+WS="${NIFRADIO_HOME:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+[ -n "$WS" ] && [ -d "$WS" ] || { echo "找不到工作目录，请设 NIFRADIO_HOME=/你的/仓库/路径"; exit 1; }
+cd "$WS" || exit 1
 
 echo "① 更新代码…"
 if git pull -q --ff-only 2>/dev/null; then

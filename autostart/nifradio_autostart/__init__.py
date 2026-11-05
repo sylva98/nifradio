@@ -12,7 +12,22 @@
 import os
 import subprocess
 
-WS = "/mnt/workspace/nifradio"
+def _find_ws() -> str:
+    """按优先级找仓库目录：环境变量 > 魔搭持久盘 > 常见部署路径 > 本包上级目录。"""
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for cand in (
+        os.environ.get("NIFRADIO_HOME"),
+        "/mnt/workspace/nifradio",
+        "/opt/nifradio",
+        os.path.expanduser("~/nifradio"),
+        here,
+    ):
+        if cand and os.path.isfile(os.path.join(cand, "boot.sh")):
+            return cand
+    return "/mnt/workspace/nifradio"
+
+
+WS = _find_ws()
 BOOT = os.path.join(WS, "boot.sh")
 LOG = os.path.join(WS, "autostart.log")
 
